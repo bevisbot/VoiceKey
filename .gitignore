@@ -1,0 +1,17 @@
+# 编译产物 / 缓存
+.build/
+*.app
+DerivedData/
+
+# 图标中间产物(由 make-icon.swift 重新生成)
+AppIcon.iconset/
+
+# Whisper 运行时:不入库(体积大 / 可重建,用 setup-whisper.sh)
+tools/
+whisper.cpp/
+models/
+*.bin
+*.tar.gz
+
+# 系统
+.DS_Store
