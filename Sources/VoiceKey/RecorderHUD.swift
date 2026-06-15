@@ -12,14 +12,18 @@ final class RecorderHUD {
         case message(String)
     }
 
-    private let pillSize = NSSize(width: 208, height: 42)
+    private let pillSize = NSSize(width: 240, height: 42)
 
     private var panel: NSPanel?
-    private let waveform = WaveformView(frame: NSRect(x: 40, y: 11, width: 150, height: 20))
+    private let waveform = WaveformView(frame: NSRect(x: 38, y: 11, width: 128, height: 20))
     private let spinner = NSProgressIndicator(frame: NSRect(x: 20, y: 13, width: 16, height: 16))
     private let dot = NSView(frame: NSRect(x: 18, y: 16, width: 9, height: 9))
     private let label = NSTextField(labelWithString: "")
+    private let engineLabel = NSTextField(labelWithString: "")  // 录音时右侧显示当前引擎
     private var hideWork: DispatchWorkItem?
+
+    /// 当前转写引擎短名(阿里云 / Whisper / Apple),由外部设置
+    var engineText = ""
 
     // MARK: - 对外接口
     func pushLevel(_ level: Float) { waveform.push(CGFloat(level)) }
@@ -55,11 +59,13 @@ final class RecorderHUD {
         let centered = NSRect(x: 0, y: (pillSize.height - 18) / 2, width: pillSize.width, height: 18)
         switch state {
         case .recording:
-            // 录音态:红点 + 满行波形当主角,不显示文字(避免拥挤)
+            // 录音态:红点 + 满行波形 + 右侧引擎小标
             dot.isHidden = false; startPulse(); dotColor(.systemRed)
             waveform.isHidden = false; waveform.reset()
             spinner.isHidden = true; spinner.stopAnimation(nil)
             label.isHidden = true
+            engineLabel.isHidden = engineText.isEmpty
+            engineLabel.stringValue = engineText
         case .transcribing:
             switchToProcessing("转写中…", centered)
         case .polishing:
@@ -67,10 +73,12 @@ final class RecorderHUD {
         case .done(let t):
             dot.isHidden = false; stopPulse(); dotColor(.systemGreen)
             waveform.isHidden = true; spinner.isHidden = true; spinner.stopAnimation(nil)
+            engineLabel.isHidden = true
             label.isHidden = false; label.stringValue = t; label.frame = centered
         case .message(let t):
             dot.isHidden = true; stopPulse()
             waveform.isHidden = true; spinner.isHidden = true; spinner.stopAnimation(nil)
+            engineLabel.isHidden = true
             label.isHidden = false; label.stringValue = t; label.frame = centered
         }
     }
@@ -78,8 +86,11 @@ final class RecorderHUD {
     private func switchToProcessing(_ text: String, _ centered: NSRect) {
         dot.isHidden = true; stopPulse()
         waveform.isHidden = true
+        engineLabel.isHidden = true
         spinner.isHidden = false; spinner.startAnimation(nil)
-        label.isHidden = false; label.stringValue = text; label.frame = centered
+        // 文字带上引擎名,如「阿里云 转写中…」
+        let full = engineText.isEmpty ? text : "\(engineText) \(text)"
+        label.isHidden = false; label.stringValue = full; label.frame = centered
     }
 
     // MARK: - 面板搭建
@@ -120,10 +131,19 @@ final class RecorderHUD {
         label.alignment = .center
         label.cell?.lineBreakMode = .byTruncatingTail
 
+        engineLabel.font = .systemFont(ofSize: 10, weight: .medium)
+        engineLabel.textColor = NSColor.white.withAlphaComponent(0.6)
+        engineLabel.backgroundColor = .clear
+        engineLabel.isBezeled = false
+        engineLabel.isEditable = false
+        engineLabel.alignment = .right
+        engineLabel.frame = NSRect(x: pillSize.width - 68, y: (pillSize.height - 16) / 2, width: 62, height: 16)
+
         content.addSubview(dot)
         content.addSubview(spinner)
         content.addSubview(waveform)
         content.addSubview(label)
+        content.addSubview(engineLabel)
         p.contentView = content
         panel = p
     }

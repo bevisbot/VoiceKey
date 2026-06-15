@@ -5,13 +5,11 @@ import Foundation
 struct WhisperTranscriber: TranscribeEngine {
     enum WhisperError: Error, LocalizedError {
         case notReady
-        case convertFailed
         case badResponse
 
         var errorDescription: String? {
             switch self {
             case .notReady: return "Whisper 引擎未就绪(正在启动,请稍候重试)"
-            case .convertFailed: return "音频转换失败"
             case .badResponse: return "Whisper 返回异常"
             }
         }
@@ -22,7 +20,7 @@ struct WhisperTranscriber: TranscribeEngine {
     }
 
     func transcribe(fileURL: URL) async throws -> String {
-        let wav = try convertTo16kWav(fileURL)
+        let wav = try AudioConvert.to16kMonoWav(fileURL)
         defer { try? FileManager.default.removeItem(at: wav) }
 
         var req = URLRequest(url: inferenceURL)
@@ -51,23 +49,6 @@ struct WhisperTranscriber: TranscribeEngine {
     }
 
     // 用 afconvert 转成 whisper 需要的 16k 单声道 16bit WAV
-    private func convertTo16kWav(_ input: URL) throws -> URL {
-        let out = FileManager.default.temporaryDirectory
-            .appendingPathComponent("vk-whisper-\(UUID().uuidString).wav")
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: "/usr/bin/afconvert")
-        p.arguments = ["-f", "WAVE", "-d", "LEI16@16000", "-c", "1", input.path, out.path]
-        p.standardOutput = FileHandle.nullDevice
-        p.standardError = FileHandle.nullDevice
-        try p.run()
-        p.waitUntilExit()
-        guard p.terminationStatus == 0,
-              FileManager.default.fileExists(atPath: out.path) else {
-            throw WhisperError.convertFailed
-        }
-        return out
-    }
-
     private func multipartBody(wavURL: URL, boundary: String) throws -> Data {
         var body = Data()
         func append(_ s: String) { body.append(s.data(using: .utf8)!) }
@@ -79,8 +60,20 @@ struct WhisperTranscriber: TranscribeEngine {
         body.append(wavData)
         append("\r\n")
 
-        // 中文为主,中英混排英文原样保留
-        for (k, v) in ["temperature": "0", "language": "zh", "response_format": "json"] {
+        // 中文引导词 + 用户词表:把 Whisper 往正确的简体中文写法 / 专有名词上拽,减少同音字误判
+        // 注意:Whisper 引导词有 token 上限,词太多会稀释,这里只取靠前的若干个(专有名词优先)
+        var prompt = "以下是简体中文普通话的转写,可能夹杂少量英文专业术语,请使用规范的简体中文。"
+        let terms = Array(Vocabulary.load().prefix(40))
+        if !terms.isEmpty { prompt += "常见词汇:" + terms.joined(separator: "、") + "。" }
+
+        let params: [(String, String)] = [
+            ("language", "zh"),
+            ("temperature", "0"),
+            ("beam_size", "3"),       // 波束搜索:速度↔准确折中(5 最准最慢,1 最快)
+            ("prompt", prompt),
+            ("response_format", "json"),
+        ]
+        for (k, v) in params {
             append("--\(boundary)\r\n")
             append("Content-Disposition: form-data; name=\"\(k)\"\r\n\r\n")
             append("\(v)\r\n")

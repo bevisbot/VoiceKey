@@ -14,8 +14,8 @@ enum Polisher {
     - 只输出润色后的文本本身,不要任何解释或引号。
     """
 
-    // 把用户词表拼进指令,提示模型纠错时优先往这些词靠
-    private static func instructions(terms: [String]) -> String {
+    // 把用户词表拼进指令,提示模型纠错时优先往这些词靠(云端/本地共用)
+    static func instructions(terms: [String]) -> String {
         guard !terms.isEmpty else { return baseInstructions }
         return baseInstructions + "\n- 【优先词表】下列是用户常用的人名/产品名/术语,若识别结果与它们读音相近,优先改成这些词:" + terms.joined(separator: "、")
     }
@@ -31,7 +31,8 @@ enum Polisher {
         }
 
         do {
-            let session = LanguageModelSession(instructions: instructions(terms: Vocabulary.load()))
+            // 润色提示词瘦身:只取最前 60 个(专有名词在前),提示短=小模型生成更快
+            let session = LanguageModelSession(instructions: instructions(terms: Array(Vocabulary.load().prefix(60))))
             let response = try await session.respond(to: trimmed)
             let out = response.content.trimmingCharacters(in: .whitespacesAndNewlines)
             return out.isEmpty ? trimmed : out

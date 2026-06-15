@@ -39,7 +39,8 @@ final class WhisperServer {
             "--host", Self.host,
             "--port", "\(Self.port)",
             "-l", "zh",      // 以中文为主,中英混排英文原样保留
-            "-t", "6"        // 线程数
+            "-t", "6",       // 线程数
+            "-fa"            // flash attention:Metal 上免费提速,不掉准确率
         ]
         let log = FileHandle(forWritingAtPath: "/tmp/voicekey-whisper.log")
             ?? { FileManager.default.createFile(atPath: "/tmp/voicekey-whisper.log", contents: nil)

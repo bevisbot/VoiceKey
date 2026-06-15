@@ -2,15 +2,18 @@ import AppKit
 import AVFoundation
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem!
     private var statusMenuItem: NSMenuItem!
+    private var statusText = "就绪(按一下右 Command 开始/结束)"
 
     private let hotKey = HotKey()
     private let recorder = AudioRecorder()
     private let appleEngine = Transcriber(localeID: "zh-CN")
     private let whisperEngine = WhisperTranscriber()
     private let whisperServer = WhisperServer()
+    private let cloudEngine = AliyunCloudTranscriber()
+    private let network = NetworkMonitor()
     private let hud = RecorderHUD()
     private var busy = false          // 转写/润色中
     private var isRecording = false   // 正在录音
@@ -21,12 +24,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         set { UserDefaults.standard.set(newValue, forKey: "useWhisper") }
     }
 
+    // 联网优先:有网+配了 key 时优先用阿里云在线;失败/断网自动降级本地
+    private var preferCloud: Bool {
+        get { UserDefaults.standard.object(forKey: "preferCloud") as? Bool ?? false }
+        set { UserDefaults.standard.set(newValue, forKey: "preferCloud") }
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         setupMenuBar()
         setupHotKey()
         requestMicPermission()
         promptAccessibilityIfNeeded()
         if whisperServer.isInstalled && useWhisper { whisperServer.start() }
+        network.start()
+        AliyunConfig.ensureTemplate()
         if ProcessInfo.processInfo.environment["VK_HUD_TEST"] != nil { runHUDSelfTest() }
     }
 
@@ -39,6 +50,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Timer.scheduledTimer(withTimeInterval: 0.07, repeats: true) { _ in
             MainActor.assumeIsolated { self.hud.pushLevel(Float.random(in: 0.15...0.95)) }
         }
+        hud.engineText = "阿里云"
         func cycle() {
             hud.show(.recording)
             DispatchQueue.main.asyncAfter(deadline: .now() + 3.5) { self.hud.show(.transcribing) }
@@ -61,31 +73,76 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     // MARK: - 菜单栏
+    // 只创建一次状态栏图标;菜单内容每次打开时重建(menuNeedsUpdate),保证勾选与"当前生效"实时准确
     private func setupMenuBar() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         updateIcon(recording: false)
-
         let menu = NSMenu()
-        menu.addItem(NSMenuItem(title: "VoiceKey — 语音输入", action: nil, keyEquivalent: ""))
-        menu.addItem(.separator())
-        statusMenuItem = NSMenuItem(title: "状态:就绪(按一下右 Command 开始/结束)", action: nil, keyEquivalent: "")
+        menu.delegate = self
+        populateMenu(menu)
+        statusItem.menu = menu
+    }
+
+    // NSMenuDelegate:每次打开菜单前重建,刷新状态/勾选/当前生效
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        populateMenu(menu)
+    }
+
+    private func populateMenu(_ menu: NSMenu) {
+        menu.removeAllItems()
+
+        let title = NSMenuItem(title: "VoiceKey — 语音输入", action: nil, keyEquivalent: "")
+        title.isEnabled = false
+        menu.addItem(title)
+
+        statusMenuItem = NSMenuItem(title: "状态:\(statusText)", action: nil, keyEquivalent: "")
+        statusMenuItem.isEnabled = false
         menu.addItem(statusMenuItem)
-        menu.addItem(.separator())
-        // 转写引擎切换
-        let whisperItem = NSMenuItem(title: "引擎:Whisper turbo(中英混排更好)", action: #selector(pickWhisper), keyEquivalent: "")
+
+        let current = NSMenuItem(title: "当前生效:\(currentEngineLabel())", action: nil, keyEquivalent: "")
+        current.isEnabled = false
+        menu.addItem(current)
+
+        // —— 转写引擎(分区:先在线总开关,再本地兜底二选一)——
+        menu.addItem(.sectionHeader(title: "转写引擎(语音 → 文字)"))
+
+        let cloudItem = NSMenuItem(title: "① 在线优先 · 阿里云(转写+润色,最准)", action: #selector(toggleCloud), keyEquivalent: "")
+        cloudItem.state = preferCloud ? .on : .off
+        menu.addItem(cloudItem)
+
+        menu.addItem(.sectionHeader(title: "② 没网 / 在线失败时,用哪个本地引擎"))
+
+        let whisperItem = NSMenuItem(title: "Whisper turbo(更准)", action: #selector(pickWhisper), keyEquivalent: "")
         whisperItem.state = useWhisper ? .on : .off
+        whisperItem.indentationLevel = 1
         if !whisperServer.isInstalled { whisperItem.isEnabled = false; whisperItem.title += "(未安装)" }
-        let appleItem = NSMenuItem(title: "引擎:Apple 系统(更快)", action: #selector(pickApple), keyEquivalent: "")
-        appleItem.state = useWhisper ? .off : .on
         menu.addItem(whisperItem)
+
+        let appleItem = NSMenuItem(title: "Apple 系统(更快)", action: #selector(pickApple), keyEquivalent: "")
+        appleItem.state = useWhisper ? .off : .on
+        appleItem.indentationLevel = 1
         menu.addItem(appleItem)
+
+        // —— 设置 ——
         menu.addItem(.separator())
+        menu.addItem(NSMenuItem(title: AliyunConfig.isConfigured ? "阿里云 API Key(已填,点此重填)…" : "填写阿里云 API Key…", action: #selector(editAliyunKey), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: "编辑自定义词表…", action: #selector(editVocabulary), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: "打开「辅助功能」设置…", action: #selector(openAccessibility), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: "打开「麦克风」设置…", action: #selector(openMic), keyEquivalent: ""))
+
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "退出", action: #selector(quit), keyEquivalent: "q"))
-        statusItem.menu = menu
+    }
+
+    // 当前这一刻实际会用哪条链路(直接告诉用户,免得靠勾选猜)
+    private func currentEngineLabel() -> String {
+        let local = (useWhisper && whisperServer.isInstalled) ? "Whisper" : "Apple"
+        if preferCloud {
+            if !AliyunConfig.isConfigured { return "本地 \(local)(在线未配置 Key)" }
+            if !network.isOnline { return "本地 \(local)(当前无网)" }
+            return "在线 阿里云(转写+润色)"
+        }
+        return "本地 \(local)"
     }
 
     private func updateIcon(recording: Bool) {
@@ -95,7 +152,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func setStatus(_ text: String) {
-        statusMenuItem.title = "状态:\(text)"
+        statusText = text
+        statusMenuItem?.title = "状态:\(text)"
     }
 
     // MARK: - 快捷键(点按右 Command 开始/结束录音)
@@ -119,6 +177,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     // MARK: - 录音 → 转写 → 润色 → 粘贴
+    // 当前这次会用的转写引擎短名(给悬浮条显示)
+    private var localEngineShort: String { (useWhisper && whisperServer.isInstalled) ? "Whisper" : "Apple" }
+    private func intendedEngineShort() -> String {
+        (preferCloud && AliyunConfig.isConfigured && network.isOnline) ? "阿里云" : localEngineShort
+    }
+
     private func startRecording() {
         guard !busy, !isRecording else { return }
         do {
@@ -126,6 +190,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             isRecording = true
             updateIcon(recording: true)
             setStatus("录音中…(再按一下右 Command 结束)")
+            hud.engineText = intendedEngineShort()
             hud.show(.recording)
         } catch {
             setStatus("录音失败:\(error.localizedDescription)")
@@ -141,11 +206,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         setStatus("转写中…")
         hud.show(.transcribing)
 
-        let engine: TranscribeEngine = (useWhisper && whisperServer.isInstalled) ? whisperEngine : appleEngine
+        let localEngine: TranscribeEngine = (useWhisper && whisperServer.isInstalled) ? whisperEngine : appleEngine
+        let tryCloud = preferCloud && AliyunConfig.isConfigured && network.isOnline
         Task {
             defer { busy = false }
             do {
-                let raw = try await engine.transcribe(fileURL: url)
+                let raw: String
+                var usedCloud = false   // 在线转写是否真的成功了
+                if tryCloud {
+                    setStatus("在线转写中…")
+                    do {
+                        raw = try await cloudEngine.transcribe(fileURL: url)
+                        usedCloud = true
+                    } catch {
+                        // 在线失败 → 自动降级本地,用户无感;悬浮条引擎名同步更新
+                        NSLog("VoiceKey 在线转写失败,降级本地:\(error.localizedDescription)")
+                        setStatus("在线失败,改用本地…")
+                        hud.engineText = localEngineShort
+                        hud.show(.transcribing)
+                        raw = try await localEngine.transcribe(fileURL: url)
+                    }
+                } else {
+                    raw = try await localEngine.transcribe(fileURL: url)
+                }
                 try? FileManager.default.removeItem(at: url)
                 guard !raw.isEmpty else {
                     setStatus("没听清,请重试")
@@ -153,9 +236,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     return
                 }
 
+                // 润色跟着转写走:云端转写→qwen-plus 润色;本地/降级→本地 Foundation Models 润色
                 setStatus("润色中…")
                 hud.show(.polishing)
-                let polished = await Polisher.polish(raw)
+                let polished = usedCloud ? await CloudPolisher.polish(raw) : await Polisher.polish(raw)
 
                 TextInserter.insert(polished)
                 setStatus("已插入 ✓")
@@ -171,14 +255,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard whisperServer.isInstalled else { return }
         useWhisper = true
         whisperServer.start()
-        setupMenuBar() // 刷新勾选
-        setStatus("已切换到 Whisper turbo")
+        setStatus("本地引擎已设为 Whisper turbo")
     }
 
     @objc private func pickApple() {
         useWhisper = false
-        setupMenuBar()
-        setStatus("已切换到 Apple 系统引擎")
+        setStatus("本地引擎已设为 Apple 系统")
+    }
+
+    @objc private func toggleCloud() {
+        if !preferCloud && !AliyunConfig.isConfigured {
+            setStatus("请先填写阿里云 API Key")
+            editAliyunKey()
+            return
+        }
+        preferCloud.toggle()
+        setStatus(preferCloud ? "已开启在线优先" : "已关闭在线优先(用本地)")
+    }
+
+    @objc private func editAliyunKey() {
+        AliyunConfig.ensureTemplate()
+        NSWorkspace.shared.open(AliyunConfig.fileURL)
     }
 
     @objc private func editVocabulary() {
