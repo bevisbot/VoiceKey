@@ -10,6 +10,7 @@ final class HotKey {
 
     private var tap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
+    private var watchdog: Timer?
     // 右 Command=54,左 Command=55,左 Option=58
     private let triggerKeyCode: Int64 = 54
 
@@ -38,7 +39,7 @@ final class HotKey {
             callback: callback,
             userInfo: Unmanaged.passUnretained(self).toOpaque()
         ) else {
-            NSLog("VoiceKey 创建事件 tap 失败(多半是未授权「辅助功能」),2 秒后重试")
+            Self.log("创建事件 tap 失败(多半是未授权「辅助功能」),2 秒后重试")
             DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
                 self?.start()
             }
@@ -50,12 +51,28 @@ final class HotKey {
         self.runLoopSource = source
         CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
         CGEvent.tapEnable(tap: tap, enable: true)
-        NSLog("VoiceKey 事件 tap 已启动")
+        Self.log("事件 tap 已启动")
+        startWatchdog()
+    }
+
+    // 看门狗:每 2 秒检查 tap 是否被系统禁用,被禁用就重新启用(防止"按键没反应")
+    private func startWatchdog() {
+        watchdog?.invalidate()
+        watchdog = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, let tap = self.tap else { return }
+                if !CGEvent.tapIsEnabled(tap: tap) {
+                    Self.log("⚠️ 事件 tap 被系统禁用,看门狗自动重新启用")
+                    CGEvent.tapEnable(tap: tap, enable: true)
+                }
+            }
+        }
     }
 
     // 在主 run loop 线程被调用
     nonisolated private func handle(type: CGEventType, event: CGEvent) {
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+            Self.log("⚠️ tap 被禁用(\(type == .tapDisabledByTimeout ? "timeout" : "userInput")),立即重新启用")
             MainActor.assumeIsolated {
                 if let tap = self.tap { CGEvent.tapEnable(tap: tap, enable: true) }
             }
@@ -83,10 +100,23 @@ final class HotKey {
             } else {
                 // 抬起:按住期间没按别的键 → 一次有效点按
                 if self.cmdHeld && !self.otherKeyDuringCmd {
+                    Self.log("右 Command 点按 → 触发 toggle")
                     self.onToggle?()
                 }
                 self.cmdHeld = false
             }
+        }
+    }
+
+    // 写入 /tmp/voicekey-timing.log(与 AppDelegate 共用,便于排查)
+    nonisolated static func log(_ s: String) {
+        let line = "[HotKey] \(s)\n"
+        guard let data = line.data(using: .utf8) else { return }
+        let url = URL(fileURLWithPath: "/tmp/voicekey-timing.log")
+        if let h = try? FileHandle(forWritingTo: url) {
+            h.seekToEndOfFile(); h.write(data); try? h.close()
+        } else {
+            try? data.write(to: url)
         }
     }
 }

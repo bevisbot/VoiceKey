@@ -16,10 +16,16 @@ cp "$BIN" "$APP/Contents/MacOS/VoiceKey"
 cp Info.plist "$APP/Contents/Info.plist"
 [ -f AppIcon.icns ] && cp AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 
-echo "==> 代码签名(ad-hoc,带 entitlements)..."
-codesign --force --deep --sign - \
-  --entitlements VoiceKey.entitlements \
-  "$APP" 2>/dev/null || codesign --force --deep --sign - "$APP"
+# 用固定的开发者证书签名(Team ID 稳定),这样系统授权(辅助功能等)不会因每次重编译而失效。
+# 没有该证书时回退到 ad-hoc(授权会每次失效)。
+SIGN_ID="${VOICEKEY_SIGN_ID:-Apple Development: rgxinlin@163.com (KR8Y7J5UBL)}"
+if security find-identity -v -p codesigning 2>/dev/null | grep -q "$SIGN_ID"; then
+  echo "==> 代码签名(稳定证书:$SIGN_ID)..."
+  codesign --force --deep --sign "$SIGN_ID" --entitlements VoiceKey.entitlements "$APP"
+else
+  echo "==> ⚠️ 未找到固定证书,回退 ad-hoc(授权会每次失效)..."
+  codesign --force --deep --sign - --entitlements VoiceKey.entitlements "$APP" 2>/dev/null || codesign --force --deep --sign - "$APP"
+fi
 
 echo "==> 完成:$(pwd)/$APP"
-echo "    首次运行:open $APP  然后按住「右 Option」说话"
+codesign -dvv "$APP" 2>&1 | grep -E "TeamIdentifier|Authority=Apple" | head -2

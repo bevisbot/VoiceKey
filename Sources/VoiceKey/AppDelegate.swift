@@ -29,6 +29,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         promptAccessibilityIfNeeded()
         network.start()
         AliyunConfig.ensureTemplate()
+        // 后台预热本地 Apple 模型,避免首次降级时冷下载卡住
+        Task { await localEngine.prepare() }
         if ProcessInfo.processInfo.environment["VK_HUD_TEST"] != nil { runHUDSelfTest() }
     }
 
@@ -220,11 +222,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                         hud.engineText = "Apple"
                         hud.show(.transcribing)
                         let tL = Date()
-                        raw = try await localEngine.transcribe(fileURL: url)
+                        raw = try await withTimeout(20) { [localEngine] in try await localEngine.transcribe(fileURL: url) }
                         timeLog("转写 [本地 Apple,降级] \(ms(tL))")
                     }
                 } else {
-                    raw = try await localEngine.transcribe(fileURL: url)
+                    raw = try await withTimeout(20) { [localEngine] in try await localEngine.transcribe(fileURL: url) }
                     timeLog("转写 [本地 Apple] \(ms(tT))")
                 }
                 try? FileManager.default.removeItem(at: url)

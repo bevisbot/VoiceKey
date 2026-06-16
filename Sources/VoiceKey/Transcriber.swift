@@ -23,6 +23,15 @@ actor Transcriber: TranscribeEngine {
         self.localeID = localeID
     }
 
+    /// 预热:启动时后台确保 zh-CN 模型已装好,避免首次降级时冷下载卡住。
+    func prepare() async {
+        guard SpeechTranscriber.isAvailable else { return }
+        let locale = Locale(identifier: localeID)
+        guard let supported = await SpeechTranscriber.supportedLocale(equivalentTo: locale) else { return }
+        let t = SpeechTranscriber(locale: supported, transcriptionOptions: [], reportingOptions: [], attributeOptions: [])
+        try? await ensureModelInstalled(for: t, locale: supported)
+    }
+
     /// 转写一个录好的音频文件,返回纯文本。
     func transcribe(fileURL: URL) async throws -> String {
         guard SpeechTranscriber.isAvailable else { throw TranscribeError.unavailable }

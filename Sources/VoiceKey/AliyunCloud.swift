@@ -52,11 +52,11 @@ enum AliyunHTTP {
 /// 同步多模态接口,音频以 base64 内联,不上传到第三方公网。
 struct AliyunCloudTranscriber: TranscribeEngine {
     enum CloudError: Error, LocalizedError {
-        case notConfigured, http(Int), badResponse
+        case notConfigured, http(Int, String), badResponse
         var errorDescription: String? {
             switch self {
             case .notConfigured: return "未配置阿里云 API Key"
-            case .http(let c): return "阿里云接口返回 \(c)"
+            case .http(let c, let msg): return "阿里云接口返回 \(c):\(msg)"
             case .badResponse: return "阿里云返回解析失败"
             }
         }
@@ -96,7 +96,10 @@ struct AliyunCloudTranscriber: TranscribeEngine {
 
         let (data, resp) = try await AliyunHTTP.session.data(for: req)
         let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
-        guard code == 200 else { throw CloudError.http(code) }
+        guard code == 200 else {
+            let bodyMsg = String(data: data, encoding: .utf8)?.prefix(200) ?? ""
+            throw CloudError.http(code, String(bodyMsg))
+        }
 
         // output.choices[0].message.content[0].text
         guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
