@@ -9,24 +9,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private let hotKey = HotKey()
     private let recorder = AudioRecorder()
-    private let appleEngine = Transcriber(localeID: "zh-CN")
-    private let whisperEngine = WhisperTranscriber()
-    private let whisperServer = WhisperServer()
-    private let cloudEngine = AliyunCloudTranscriber()
+    private let localEngine = Transcriber(localeID: "zh-CN")   // 第二层:Apple SpeechTranscriber
+    private let cloudEngine = AliyunCloudTranscriber()         // 第一层:阿里云在线
     private let network = NetworkMonitor()
     private let hud = RecorderHUD()
     private var busy = false          // 转写/润色中
     private var isRecording = false   // 正在录音
 
-    // 是否用 Whisper(默认是,装了才生效);持久化到 UserDefaults
-    private var useWhisper: Bool {
-        get { UserDefaults.standard.object(forKey: "useWhisper") as? Bool ?? true }
-        set { UserDefaults.standard.set(newValue, forKey: "useWhisper") }
-    }
-
-    // 联网优先:有网+配了 key 时优先用阿里云在线;失败/断网自动降级本地
+    // 联网优先:有网+配了 key 时优先用阿里云在线;失败/断网自动降级本地 Apple
     private var preferCloud: Bool {
-        get { UserDefaults.standard.object(forKey: "preferCloud") as? Bool ?? false }
+        get { UserDefaults.standard.object(forKey: "preferCloud") as? Bool ?? true }
         set { UserDefaults.standard.set(newValue, forKey: "preferCloud") }
     }
 
@@ -35,14 +27,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         setupHotKey()
         requestMicPermission()
         promptAccessibilityIfNeeded()
-        if whisperServer.isInstalled && useWhisper { whisperServer.start() }
         network.start()
         AliyunConfig.ensureTemplate()
         if ProcessInfo.processInfo.environment["VK_HUD_TEST"] != nil { runHUDSelfTest() }
-    }
-
-    func applicationWillTerminate(_ notification: Notification) {
-        whisperServer.stop()
     }
 
     // 临时自测:不触发录音,循环演示悬浮控件各状态(VK_HUD_TEST=1 时)
@@ -103,25 +90,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         current.isEnabled = false
         menu.addItem(current)
 
-        // —— 转写引擎(分区:先在线总开关,再本地兜底二选一)——
+        // —— 转写引擎(两层:在线阿里云 → 断网降级本地 Apple)——
         menu.addItem(.sectionHeader(title: "转写引擎(语音 → 文字)"))
 
-        let cloudItem = NSMenuItem(title: "① 在线优先 · 阿里云(转写+润色,最准)", action: #selector(toggleCloud), keyEquivalent: "")
+        let cloudItem = NSMenuItem(title: "在线优先 · 阿里云(转写+润色,最准)", action: #selector(toggleCloud), keyEquivalent: "")
         cloudItem.state = preferCloud ? .on : .off
         menu.addItem(cloudItem)
 
-        menu.addItem(.sectionHeader(title: "② 没网 / 在线失败时,用哪个本地引擎"))
-
-        let whisperItem = NSMenuItem(title: "Whisper turbo(更准)", action: #selector(pickWhisper), keyEquivalent: "")
-        whisperItem.state = useWhisper ? .on : .off
-        whisperItem.indentationLevel = 1
-        if !whisperServer.isInstalled { whisperItem.isEnabled = false; whisperItem.title += "(未安装)" }
-        menu.addItem(whisperItem)
-
-        let appleItem = NSMenuItem(title: "Apple 系统(更快)", action: #selector(pickApple), keyEquivalent: "")
-        appleItem.state = useWhisper ? .off : .on
-        appleItem.indentationLevel = 1
-        menu.addItem(appleItem)
+        let fallbackHint = NSMenuItem(title: "断网 / 在线失败时:本地 Apple + 系统润色", action: nil, keyEquivalent: "")
+        fallbackHint.isEnabled = false
+        fallbackHint.indentationLevel = 1
+        menu.addItem(fallbackHint)
 
         // —— 设置 ——
         menu.addItem(.separator())
@@ -134,15 +113,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(NSMenuItem(title: "退出", action: #selector(quit), keyEquivalent: "q"))
     }
 
-    // 当前这一刻实际会用哪条链路(直接告诉用户,免得靠勾选猜)
+    // 当前这一刻实际会用哪条链路(直接告诉用户)
     private func currentEngineLabel() -> String {
-        let local = (useWhisper && whisperServer.isInstalled) ? "Whisper" : "Apple"
         if preferCloud {
-            if !AliyunConfig.isConfigured { return "本地 \(local)(在线未配置 Key)" }
-            if !network.isOnline { return "本地 \(local)(当前无网)" }
+            if !AliyunConfig.isConfigured { return "本地 Apple(在线未配置 Key)" }
+            if !network.isOnline { return "本地 Apple(当前无网)" }
             return "在线 阿里云(转写+润色)"
         }
-        return "本地 \(local)"
+        return "本地 Apple"
     }
 
     private func updateIcon(recording: Bool) {
@@ -178,9 +156,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // MARK: - 录音 → 转写 → 润色 → 粘贴
     // 当前这次会用的转写引擎短名(给悬浮条显示)
-    private var localEngineShort: String { (useWhisper && whisperServer.isInstalled) ? "Whisper" : "Apple" }
     private func intendedEngineShort() -> String {
-        (preferCloud && AliyunConfig.isConfigured && network.isOnline) ? "阿里云" : localEngineShort
+        (preferCloud && AliyunConfig.isConfigured && network.isOnline) ? "阿里云" : "Apple"
     }
 
     private func startRecording() {
@@ -206,7 +183,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         setStatus("转写中…")
         hud.show(.transcribing)
 
-        let localEngine: TranscribeEngine = (useWhisper && whisperServer.isInstalled) ? whisperEngine : appleEngine
         let tryCloud = preferCloud && AliyunConfig.isConfigured && network.isOnline
         Task {
             defer { busy = false }
@@ -222,7 +198,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                         // 在线失败 → 自动降级本地,用户无感;悬浮条引擎名同步更新
                         NSLog("VoiceKey 在线转写失败,降级本地:\(error.localizedDescription)")
                         setStatus("在线失败,改用本地…")
-                        hud.engineText = localEngineShort
+                        hud.engineText = "Apple"
                         hud.show(.transcribing)
                         raw = try await localEngine.transcribe(fileURL: url)
                     }
@@ -249,18 +225,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 hud.show(.message("失败,请重试")); hud.hide(after: 2)
             }
         }
-    }
-
-    @objc private func pickWhisper() {
-        guard whisperServer.isInstalled else { return }
-        useWhisper = true
-        whisperServer.start()
-        setStatus("本地引擎已设为 Whisper turbo")
-    }
-
-    @objc private func pickApple() {
-        useWhisper = false
-        setStatus("本地引擎已设为 Apple 系统")
     }
 
     @objc private func toggleCloud() {
