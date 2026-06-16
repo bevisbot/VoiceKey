@@ -36,6 +36,18 @@ enum AliyunConfig {
     }
 }
 
+/// 给阿里云请求用的 URLSession:设"总时长硬上限",超时即整体失败(可被 catch 捕获→降级本地)。
+/// 注意:URLRequest.timeoutInterval 只是"空闲超时",不能限制总时长,必须用 resource 超时。
+enum AliyunHTTP {
+    static let session: URLSession = {
+        let c = URLSessionConfiguration.default
+        c.timeoutIntervalForRequest = 6   // 单次请求空闲超时
+        c.timeoutIntervalForResource = 6  // 整个请求总时长上限(关键)
+        c.waitsForConnectivity = false
+        return URLSession(configuration: c)
+    }()
+}
+
 /// 阿里云百炼 Qwen3-ASR-Flash 在线转写(中英混排 / 上下文纠错更强)。
 /// 同步多模态接口,音频以 base64 内联,不上传到第三方公网。
 struct AliyunCloudTranscriber: TranscribeEngine {
@@ -77,12 +89,12 @@ struct AliyunCloudTranscriber: TranscribeEngine {
 
         var req = URLRequest(url: endpoint)
         req.httpMethod = "POST"
-        req.timeoutInterval = 10  // 抖动时快速失败、立刻降级本地,而不是死等
+        req.timeoutInterval = 6
         req.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try JSONSerialization.data(withJSONObject: body)
 
-        let (data, resp) = try await URLSession.shared.data(for: req)
+        let (data, resp) = try await AliyunHTTP.session.data(for: req)
         let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
         guard code == 200 else { throw CloudError.http(code) }
 
@@ -121,14 +133,14 @@ enum CloudPolisher {
 
         var req = URLRequest(url: endpoint)
         req.httpMethod = "POST"
-        req.timeoutInterval = 10  // 润色抖动时快速失败,返回未润色转写
+        req.timeoutInterval = 6
         req.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         guard let payload = try? JSONSerialization.data(withJSONObject: body) else { return trimmed }
         req.httpBody = payload
 
         do {
-            let (data, resp) = try await URLSession.shared.data(for: req)
+            let (data, resp) = try await AliyunHTTP.session.data(for: req)
             guard (resp as? HTTPURLResponse)?.statusCode == 200,
                   let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let choices = obj["choices"] as? [[String: Any]],
