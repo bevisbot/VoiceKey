@@ -134,6 +134,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         statusMenuItem?.title = "状态:\(text)"
     }
 
+    // 计时埋点:写入 /tmp/voicekey-timing.log(诊断速度用)
+    private func ms(_ start: Date) -> String {
+        String(format: "%.0f ms", Date().timeIntervalSince(start) * 1000)
+    }
+    private func timeLog(_ s: String) {
+        let line = "[\(Date())] \(s)\n"
+        guard let data = line.data(using: .utf8) else { return }
+        let url = URL(fileURLWithPath: "/tmp/voicekey-timing.log")
+        if let h = try? FileHandle(forWritingTo: url) {
+            h.seekToEndOfFile(); h.write(data); try? h.close()
+        } else {
+            try? data.write(to: url)
+        }
+    }
+
     // MARK: - 快捷键(点按右 Command 开始/结束录音)
     private func setupHotKey() {
         hotKey.onToggle = { [weak self] in self?.toggleRecording() }
@@ -184,26 +199,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         hud.show(.transcribing)
 
         let tryCloud = preferCloud && AliyunConfig.isConfigured && network.isOnline
+        timeLog("--- 开始 (tryCloud=\(tryCloud), online=\(network.isOnline), keyConfigured=\(AliyunConfig.isConfigured)) ---")
         Task {
             defer { busy = false }
             do {
                 let raw: String
                 var usedCloud = false   // 在线转写是否真的成功了
+                let tT = Date()
                 if tryCloud {
                     setStatus("在线转写中…")
                     do {
                         raw = try await cloudEngine.transcribe(fileURL: url)
                         usedCloud = true
+                        timeLog("转写 [云 阿里云] \(ms(tT))")
                     } catch {
                         // 在线失败 → 自动降级本地,用户无感;悬浮条引擎名同步更新
+                        timeLog("云端转写失败(\(ms(tT))):\(error.localizedDescription) → 降级本地")
                         NSLog("VoiceKey 在线转写失败,降级本地:\(error.localizedDescription)")
                         setStatus("在线失败,改用本地…")
                         hud.engineText = "Apple"
                         hud.show(.transcribing)
+                        let tL = Date()
                         raw = try await localEngine.transcribe(fileURL: url)
+                        timeLog("转写 [本地 Apple,降级] \(ms(tL))")
                     }
                 } else {
                     raw = try await localEngine.transcribe(fileURL: url)
+                    timeLog("转写 [本地 Apple] \(ms(tT))")
                 }
                 try? FileManager.default.removeItem(at: url)
                 guard !raw.isEmpty else {
@@ -215,7 +237,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 // 润色跟着转写走:云端转写→qwen-plus 润色;本地/降级→本地 Foundation Models 润色
                 setStatus("润色中…")
                 hud.show(.polishing)
+                let tP = Date()
                 let polished = usedCloud ? await CloudPolisher.polish(raw) : await Polisher.polish(raw)
+                timeLog("润色 [\(usedCloud ? "云 qwen-plus" : "本地 FM")] \(ms(tP))")
 
                 TextInserter.insert(polished)
                 setStatus("已插入 ✓")

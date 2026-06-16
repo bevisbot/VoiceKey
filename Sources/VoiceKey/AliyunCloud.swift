@@ -77,7 +77,7 @@ struct AliyunCloudTranscriber: TranscribeEngine {
 
         var req = URLRequest(url: endpoint)
         req.httpMethod = "POST"
-        req.timeoutInterval = 20
+        req.timeoutInterval = 10  // 抖动时快速失败、立刻降级本地,而不是死等
         req.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try JSONSerialization.data(withJSONObject: body)
@@ -121,7 +121,7 @@ enum CloudPolisher {
 
         var req = URLRequest(url: endpoint)
         req.httpMethod = "POST"
-        req.timeoutInterval = 20
+        req.timeoutInterval = 10  // 润色抖动时快速失败,返回未润色转写
         req.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         guard let payload = try? JSONSerialization.data(withJSONObject: body) else { return trimmed }
