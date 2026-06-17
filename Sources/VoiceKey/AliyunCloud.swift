@@ -41,8 +41,8 @@ enum AliyunConfig {
 enum AliyunHTTP {
     static let session: URLSession = {
         let c = URLSessionConfiguration.default
-        c.timeoutIntervalForRequest = 6   // 单次请求空闲超时
-        c.timeoutIntervalForResource = 6  // 整个请求总时长上限(关键)
+        c.timeoutIntervalForRequest = 3   // 单次请求空闲超时
+        c.timeoutIntervalForResource = 3  // 整个请求总时长上限(关键;平时 ~1.5s,留 2 倍余量)
         c.waitsForConnectivity = false
         return URLSession(configuration: c)
     }()
@@ -89,7 +89,7 @@ struct AliyunCloudTranscriber: TranscribeEngine {
 
         var req = URLRequest(url: endpoint)
         req.httpMethod = "POST"
-        req.timeoutInterval = 6
+        req.timeoutInterval = 3
         req.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try JSONSerialization.data(withJSONObject: body)
@@ -136,7 +136,7 @@ enum CloudPolisher {
 
         var req = URLRequest(url: endpoint)
         req.httpMethod = "POST"
-        req.timeoutInterval = 6
+        req.timeoutInterval = 3
         req.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         guard let payload = try? JSONSerialization.data(withJSONObject: body) else { return trimmed }
