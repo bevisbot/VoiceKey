@@ -102,6 +102,8 @@ final class VolcanoStreamingSession: @unchecked Sendable {
     }
 
     /// 松手:发空的结束包(负序号),等最终结果。
+    /// 兜底超时:服务端最终包久不到达(半开连接 / 静默断流)时,用已有部分结果完成,
+    /// 避免 continuation 永不 resume 导致上层 busy 永久卡死。
     func finish() async throws -> String {
         try await withCheckedThrowingContinuation { c in
             q.async {
@@ -110,7 +112,15 @@ final class VolcanoStreamingSession: @unchecked Sendable {
                 guard let ws = self.ws else { c.resume(throwing: SError.failed("连接未建立")); return }
                 self.seq += 1
                 ws.send(.data(Self.frame(2, 0b0011, 0x00, -self.seq, Data()))) { _ in }
-                // 结果到达后由 receiveLoop → complete 触发
+                // 结果到达后由 receiveLoop → complete 触发;若 8s 内没等到最终包则兜底收尾
+                self.q.asyncAfter(deadline: .now() + 8) {
+                    guard !self.finished else { return }
+                    if self.latest.isEmpty {
+                        self.complete(.failure(SError.failed("转写超时")))
+                    } else {
+                        self.complete(.success(self.latest)) // 有部分结果就先用,不让用户白等
+                    }
+                }
             }
         }
     }
@@ -125,7 +135,8 @@ final class VolcanoStreamingSession: @unchecked Sendable {
             switch result {
             case .success(let msg):
                 if case let .data(d) = msg { self.q.async { self.handle(d) } }
-                if !self.finished { self.receiveLoop() }
+                // re-arm 判断放回串行队列读 finished,避免与 q 上的写并发(数据竞争)
+                self.q.async { if !self.finished { self.receiveLoop() } }
             case .failure(let e):
                 self.q.async { self.complete(.failure(SError.failed(e.localizedDescription))) }
             }

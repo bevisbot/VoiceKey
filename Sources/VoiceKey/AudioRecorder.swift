@@ -26,13 +26,14 @@ final class AudioRecorder {
     }
 
     func stop() {
-        engine.inputNode.removeTap(onBus: 0)
+        engine.inputNode.removeTap(onBus: 0)  // 先摘 tap,确保不再有新的回调
         engine.stop()
+        onPCM = nil   // 摘 tap 后再清回调,避免与录音线程并发读写闭包
     }
 
     private func process(_ buffer: AVAudioPCMBuffer) {
         reportLevel(buffer)
-        guard let converter else { return }
+        guard let onPCM, let converter else { return }  // 一次性取出回调,缩小竞争窗口
 
         let ratio = target.sampleRate / buffer.format.sampleRate
         let cap = AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 256
@@ -48,7 +49,7 @@ final class AudioRecorder {
               let ch = out.int16ChannelData else { return }
         let bytes = Int(out.frameLength) * 2  // 16bit = 2 bytes/sample, mono
         let data = Data(bytes: ch[0], count: bytes)
-        onPCM?(data)
+        onPCM(data)
     }
 
     // RMS 音量 → 0~1(从原始 float 缓冲算)

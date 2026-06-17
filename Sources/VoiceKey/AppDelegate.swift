@@ -124,7 +124,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         AVCaptureDevice.requestAccess(for: .audio) { _ in }
     }
 
-    // MARK: - 录音(边录边推流)→ 松手出结果 → qwen-plus 润色 → 粘贴。无降级。
+    // MARK: - 录音(边录边推流)→ 松手出结果 → qwen-flash 润色 → 粘贴。无降级。
     private func startRecording() {
         guard !busy, !isRecording else { return }
         guard VolcanoConfig.isConfigured else {
@@ -169,8 +169,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func stopAndProcess() {
         guard isRecording, let s = session else { return }
         isRecording = false
-        recorder.stop()
-        recorder.onPCM = nil
+        recorder.stop()   // 内部已清 onPCM 回调
         updateIcon(recording: false)
         busy = true
         setStatus("转写中…")
