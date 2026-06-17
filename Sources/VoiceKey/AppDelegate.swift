@@ -22,6 +22,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         set { UserDefaults.standard.set(newValue, forKey: "preferCloud") }
     }
 
+    // 熔断:云端连续失败就暂停一段时间直接走本地,避免每句白等超时
+    private var cloudFails = 0
+    private var cloudCooldownUntil: Date?
+    private let cloudFailThreshold = 2          // 连续失败几次触发熔断
+    private let cloudCooldownSeconds = 120.0    // 熔断后暂停多久再试云端
+
+    /// 此刻是否该尝试云端(考虑开关/网络/key/熔断冷却)
+    private var cloudUsable: Bool {
+        guard preferCloud, AliyunConfig.isConfigured, network.isOnline else { return false }
+        if let until = cloudCooldownUntil, Date() < until { return false }
+        return true
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         setupMenuBar()
         setupHotKey()
@@ -120,6 +133,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if preferCloud {
             if !AliyunConfig.isConfigured { return "本地 Apple(在线未配置 Key)" }
             if !network.isOnline { return "本地 Apple(当前无网)" }
+            if let until = cloudCooldownUntil, Date() < until {
+                let s = Int(until.timeIntervalSinceNow)
+                return "本地 Apple(云端不稳,暂停 \(s)s 后再试)"
+            }
             return "在线 阿里云(转写+润色)"
         }
         return "本地 Apple"
@@ -174,7 +191,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // MARK: - 录音 → 转写 → 润色 → 粘贴
     // 当前这次会用的转写引擎短名(给悬浮条显示)
     private func intendedEngineShort() -> String {
-        (preferCloud && AliyunConfig.isConfigured && network.isOnline) ? "阿里云" : "Apple"
+        cloudUsable ? "阿里云" : "Apple"
     }
 
     private func startRecording() {
@@ -200,8 +217,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         setStatus("转写中…")
         hud.show(.transcribing)
 
-        let tryCloud = preferCloud && AliyunConfig.isConfigured && network.isOnline
-        timeLog("--- 开始 (tryCloud=\(tryCloud), online=\(network.isOnline), keyConfigured=\(AliyunConfig.isConfigured)) ---")
+        let tryCloud = cloudUsable
+        timeLog("--- 开始 (tryCloud=\(tryCloud), online=\(network.isOnline), keyConfigured=\(AliyunConfig.isConfigured), cloudFails=\(cloudFails)) ---")
         Task {
             defer { busy = false }
             do {
@@ -213,9 +230,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     do {
                         raw = try await cloudEngine.transcribe(fileURL: url)
                         usedCloud = true
+                        cloudFails = 0; cloudCooldownUntil = nil   // 成功:重置熔断
                         timeLog("转写 [云 阿里云] \(ms(tT))")
                     } catch {
-                        // 在线失败 → 自动降级本地,用户无感;悬浮条引擎名同步更新
+                        // 在线失败 → 计入熔断,自动降级本地
+                        cloudFails += 1
+                        if cloudFails >= cloudFailThreshold {
+                            cloudCooldownUntil = Date().addingTimeInterval(cloudCooldownSeconds)
+                            timeLog("云端连续 \(cloudFails) 次失败 → 熔断,暂停 \(Int(cloudCooldownSeconds))s 直接走本地")
+                        }
                         timeLog("云端转写失败(\(ms(tT))):\(error.localizedDescription) → 降级本地")
                         NSLog("VoiceKey 在线转写失败,降级本地:\(error.localizedDescription)")
                         setStatus("在线失败,改用本地…")
