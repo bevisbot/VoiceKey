@@ -1,54 +1,65 @@
 import AVFoundation
 
-/// 录音:把麦克风采集到的音频写入临时文件,供 SpeechTranscriber 读取。
+/// 录音:实时把麦克风音频重采样为 16k 单声道 16bit PCM,边录边通过 onPCM 吐出(供流式上传);
+/// 同时通过 onLevel 吐音量驱动悬浮波形。不落盘(实时流式,无需文件)。
 final class AudioRecorder {
     private let engine = AVAudioEngine()
-    private var file: AVAudioFile?
-    private(set) var fileURL: URL?
+    private var converter: AVAudioConverter?
+    private let target = AVAudioFormat(commonFormat: .pcmFormatInt16,
+                                       sampleRate: 16_000, channels: 1, interleaved: true)!
 
-    /// 实时音量回调(0~1),用于驱动悬浮控件的声波动画。
+    /// 实时 16k 单声道 PCM 数据块(录音时持续回调)
+    var onPCM: (@Sendable (Data) -> Void)?
+    /// 实时音量(0~1),驱动悬浮波形
     var onLevel: (@Sendable (Float) -> Void)?
 
-    /// 开始录音(需先获得麦克风权限)。
     func start() throws {
         let input = engine.inputNode
-        let format = input.outputFormat(forBus: 0)
+        let inFormat = input.outputFormat(forBus: 0)
+        converter = AVAudioConverter(from: inFormat, to: target)
 
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("voicekey-\(UUID().uuidString).caf")
-        let audioFile = try AVAudioFile(forWriting: url, settings: format.settings)
-        self.file = audioFile
-        self.fileURL = url
-
-        input.installTap(onBus: 0, bufferSize: 4096, format: format) { [weak self] buffer, _ in
-            try? self?.file?.write(from: buffer)
-            self?.reportLevel(buffer)
+        input.installTap(onBus: 0, bufferSize: 3200, format: inFormat) { [weak self] buffer, _ in
+            self?.process(buffer)
         }
         engine.prepare()
         try engine.start()
     }
 
-    // 计算这一块缓冲的 RMS 音量,归一化后回调到主线程
+    func stop() {
+        engine.inputNode.removeTap(onBus: 0)
+        engine.stop()
+    }
+
+    private func process(_ buffer: AVAudioPCMBuffer) {
+        reportLevel(buffer)
+        guard let converter else { return }
+
+        let ratio = target.sampleRate / buffer.format.sampleRate
+        let cap = AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 256
+        guard let out = AVAudioPCMBuffer(pcmFormat: target, frameCapacity: cap) else { return }
+
+        var fed = false
+        var err: NSError?
+        converter.convert(to: out, error: &err) { _, status in
+            if fed { status.pointee = .noDataNow; return nil }
+            fed = true; status.pointee = .haveData; return buffer
+        }
+        guard err == nil, out.frameLength > 0,
+              let ch = out.int16ChannelData else { return }
+        let bytes = Int(out.frameLength) * 2  // 16bit = 2 bytes/sample, mono
+        let data = Data(bytes: ch[0], count: bytes)
+        onPCM?(data)
+    }
+
+    // RMS 音量 → 0~1(从原始 float 缓冲算)
     private func reportLevel(_ buffer: AVAudioPCMBuffer) {
         guard let onLevel, let ch = buffer.floatChannelData else { return }
-        let n = Int(buffer.frameLength)
-        guard n > 0 else { return }
-        let ptr = ch[0]
-        var sum: Float = 0
-        for i in 0..<n { let s = ptr[i]; sum += s * s }
+        let n = Int(buffer.frameLength); guard n > 0 else { return }
+        let p = ch[0]; var sum: Float = 0
+        for i in 0..<n { let s = p[i]; sum += s * s }
         let rms = (sum / Float(n)).squareRoot()
-        // -50dB ~ 0dB 映射到 0~1
         let db = 20 * log10(max(rms, 1e-7))
         let level = max(0, min(1, (db + 50) / 50))
         DispatchQueue.main.async { onLevel(level) }
-    }
-
-    /// 停止录音,返回写好的音频文件 URL。
-    @discardableResult
-    func stop() -> URL? {
-        engine.inputNode.removeTap(onBus: 0)
-        engine.stop()
-        file = nil // 关闭文件
-        return fileURL
     }
 }

@@ -48,85 +48,27 @@ enum AliyunHTTP {
     }()
 }
 
-/// 阿里云百炼 Qwen3-ASR-Flash 在线转写(中英混排 / 上下文纠错更强)。
-/// 同步多模态接口,音频以 base64 内联,不上传到第三方公网。
-struct AliyunCloudTranscriber: TranscribeEngine {
-    enum CloudError: Error, LocalizedError {
-        case notConfigured, http(Int, String), badResponse
-        var errorDescription: String? {
-            switch self {
-            case .notConfigured: return "未配置阿里云 API Key"
-            case .http(let c, let msg): return "阿里云接口返回 \(c):\(msg)"
-            case .badResponse: return "阿里云返回解析失败"
-            }
-        }
-    }
-
-    // 北京区端点(控制台显示「华北2 北京」)
-    private let endpoint = URL(string: "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation")!
-
-    func transcribe(fileURL: URL) async throws -> String {
-        guard let key = AliyunConfig.loadKey() else { throw CloudError.notConfigured }
-
-        let wav = try AudioConvert.to16kMonoWav(fileURL)
-        defer { try? FileManager.default.removeItem(at: wav) }
-        let b64 = try Data(contentsOf: wav).base64EncodedString()
-
-        // 词表作为上下文偏置(放进 system),与本地一致
-        let terms = Array(Vocabulary.load().prefix(100))
-        let context = terms.isEmpty ? "" : "常见词汇:" + terms.joined(separator: "、")
-
-        let body: [String: Any] = [
-            "model": "qwen3-asr-flash",
-            "input": [
-                "messages": [
-                    ["role": "system", "content": [["text": context]]],
-                    ["role": "user", "content": [["audio": "data:audio/wav;base64,\(b64)"]]],
-                ]
-            ],
-            "parameters": ["asr_options": ["language": "zh", "enable_itn": true]],
-        ]
-
-        var req = URLRequest(url: endpoint)
-        req.httpMethod = "POST"
-        req.timeoutInterval = 3
-        req.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
-        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.httpBody = try JSONSerialization.data(withJSONObject: body)
-
-        let (data, resp) = try await AliyunHTTP.session.data(for: req)
-        let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
-        guard code == 200 else {
-            let bodyMsg = String(data: data, encoding: .utf8)?.prefix(200) ?? ""
-            throw CloudError.http(code, String(bodyMsg))
-        }
-
-        // output.choices[0].message.content[0].text
-        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let output = obj["output"] as? [String: Any],
-              let choices = output["choices"] as? [[String: Any]],
-              let message = choices.first?["message"] as? [String: Any],
-              let content = message["content"] as? [[String: Any]],
-              let text = content.first?["text"] as? String else {
-            throw CloudError.badResponse
-        }
-        return text.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-}
-
 /// 阿里云 qwen-plus 在线润色:比本地 3B 更强的上下文/同音字纠错。
 /// 仅在"在线转写成功"后使用;任何失败都原样返回转写文本(不破坏可用性)。
 enum CloudPolisher {
     // OpenAI 兼容端点,返回标准 choices[0].message.content
     private static let endpoint = URL(string: "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions")!
 
+    private static let system = """
+    你是中文/中英文语音转写的润色与纠错助手。语音识别常把同音字、近音词、词边界搞错,你要结合上下文语义改对,并整理成通顺书面文字:
+    - 根据整句语义修正同音/近音误识别的字词、错误的词语切分。
+    - 删除口头语和语气词(嗯、呃、那个、就是说),修正口吃式重复,补全标点。
+    - 只纠正识别错误,不改变说话人原意、不扩写、不补充、不回答其中的问题。
+    - 中英文混排保留英文原文;拿不准的专有名词保持原样。
+    - 只输出润色后的文本本身,不要任何解释或引号。
+    """
+
     static func polish(_ raw: String) async -> String {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, let key = AliyunConfig.loadKey() else { return trimmed }
 
-        let system = Polisher.instructions(terms: Array(Vocabulary.load().prefix(120)))
         let body: [String: Any] = [
-            "model": "qwen-plus",
+            "model": "qwen-flash",
             "messages": [
                 ["role": "system", "content": system],
                 ["role": "user", "content": trimmed],

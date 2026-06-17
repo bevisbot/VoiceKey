@@ -15,7 +15,7 @@ final class RecorderHUD {
     private let pillSize = NSSize(width: 240, height: 42)
 
     private var panel: NSPanel?
-    private let waveform = WaveformView(frame: NSRect(x: 38, y: 11, width: 128, height: 20))
+    private let waveform = WaveformView(frame: NSRect(x: 38, y: 11, width: 184, height: 20))
     private let spinner = NSProgressIndicator(frame: NSRect(x: 20, y: 13, width: 16, height: 16))
     private let dot = NSView(frame: NSRect(x: 18, y: 16, width: 9, height: 9))
     private let label = NSTextField(labelWithString: "")
@@ -59,13 +59,12 @@ final class RecorderHUD {
         let centered = NSRect(x: 0, y: (pillSize.height - 18) / 2, width: pillSize.width, height: 18)
         switch state {
         case .recording:
-            // 录音态:红点 + 满行波形 + 右侧引擎小标
+            // 录音态:红点 + 满行波形(说话阶段模型未介入,不显示引擎名)
             dot.isHidden = false; startPulse(); dotColor(.systemRed)
             waveform.isHidden = false; waveform.reset()
             spinner.isHidden = true; spinner.stopAnimation(nil)
             label.isHidden = true
-            engineLabel.isHidden = engineText.isEmpty
-            engineLabel.stringValue = engineText
+            engineLabel.isHidden = true
         case .transcribing:
             switchToProcessing("转写中…", centered)
         case .polishing:
@@ -137,7 +136,7 @@ final class RecorderHUD {
         engineLabel.isBezeled = false
         engineLabel.isEditable = false
         engineLabel.alignment = .right
-        engineLabel.frame = NSRect(x: pillSize.width - 68, y: (pillSize.height - 16) / 2, width: 62, height: 16)
+        engineLabel.frame = NSRect(x: pillSize.width - 78, y: (pillSize.height - 16) / 2, width: 64, height: 16)
 
         content.addSubview(dot)
         content.addSubview(spinner)
