@@ -27,7 +27,7 @@ enum AliyunConfig {
     static func ensureTemplate() {
         guard !FileManager.default.fileExists(atPath: fileURL.path) else { return }
         let tmpl = """
-        # 在下面单独一行粘贴你的阿里云百炼 API Key(以 sk- 开头),用于 qwen-flash 润色。
+        # 在下面单独一行粘贴你的阿里云百炼 API Key(以 sk- 开头),用于 qwen-plus 润色。
         # 这个文件只存在你本机,不会上传。粘贴后保存即可生效(无需重启)。
         # 提示:贴在这里的 key 请不要再发到任何聊天/截图里。
 
@@ -41,14 +41,14 @@ enum AliyunConfig {
 enum AliyunHTTP {
     static let session: URLSession = {
         let c = URLSessionConfiguration.default
-        c.timeoutIntervalForRequest = 5   // 单次请求空闲超时
-        c.timeoutIntervalForResource = 5  // 整个请求总时长上限(平时 ~1.5s;长句+抖动留足余量,免误杀)
+        c.timeoutIntervalForRequest = 8   // 单次请求空闲超时
+        c.timeoutIntervalForResource = 8  // 整个请求总时长上限(qwen-plus 比 flash 慢,长句留足余量免误杀)
         c.waitsForConnectivity = false
         return URLSession(configuration: c)
     }()
 }
 
-/// 阿里云 qwen-flash 在线润色:结合上下文做同音字/词边界纠错 + 去口头语 + 补标点。
+/// 阿里云 qwen-plus 在线润色:结合上下文做同音字/词边界纠错 + 去口头语 + 补标点。
 /// 仅在火山转写成功后使用;任何失败(超时/网络/解析)都原样返回转写文本,不破坏可用性。
 enum CloudPolisher {
     // OpenAI 兼容端点,返回标准 choices[0].message.content
@@ -75,7 +75,7 @@ enum CloudPolisher {
         </transcript>
         """
         let body: [String: Any] = [
-            "model": "qwen-flash",
+            "model": "qwen-plus",
             "messages": [
                 ["role": "system", "content": system],
                 ["role": "user", "content": userMsg],
@@ -85,7 +85,7 @@ enum CloudPolisher {
 
         var req = URLRequest(url: endpoint)
         req.httpMethod = "POST"
-        req.timeoutInterval = 5
+        req.timeoutInterval = 8
         req.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         guard let payload = try? JSONSerialization.data(withJSONObject: body) else { return trimmed }

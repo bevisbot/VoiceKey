@@ -72,13 +72,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         statusMenuItem.isEnabled = false
         menu.addItem(statusMenuItem)
 
-        let engine = NSMenuItem(title: "引擎:火山实时流式 + qwen-flash 润色", action: nil, keyEquivalent: "")
+        let engine = NSMenuItem(title: "引擎:火山实时流式 + qwen-plus 润色", action: nil, keyEquivalent: "")
         engine.isEnabled = false
         menu.addItem(engine)
 
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: VolcanoConfig.isConfigured ? "火山 API 凭据(已填,点此重填)…" : "填写火山 API 凭据…", action: #selector(editVolcanoKey), keyEquivalent: ""))
-        menu.addItem(NSMenuItem(title: AliyunConfig.isConfigured ? "阿里云 Key·润色(已填,点此重填)…" : "填写阿里云 Key(qwen-flash 润色)…", action: #selector(editAliyunKey), keyEquivalent: ""))
+        menu.addItem(NSMenuItem(title: AliyunConfig.isConfigured ? "阿里云 Key·润色(已填,点此重填)…" : "填写阿里云 Key(qwen-plus 润色)…", action: #selector(editAliyunKey), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: "打开「辅助功能」设置…", action: #selector(openAccessibility), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: "打开「麦克风」设置…", action: #selector(openMic), keyEquivalent: ""))
 
@@ -124,7 +124,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         AVCaptureDevice.requestAccess(for: .audio) { _ in }
     }
 
-    // MARK: - 录音(边录边推流)→ 松手出结果 → qwen-flash 润色 → 粘贴。无降级。
+    // MARK: - 录音(边录边推流)→ 松手出结果 → qwen-plus 润色 → 粘贴。无降级。
     private func startRecording() {
         guard !busy, !isRecording else { return }
         guard VolcanoConfig.isConfigured else {
@@ -189,11 +189,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 }
 
                 setStatus("润色中…")
-                hud.engineText = "qwen-flash"
+                hud.engineText = "qwen-plus"
                 hud.show(.polishing)
                 let tP = Date()
                 let polished = await CloudPolisher.polish(raw)   // 配了阿里云 key 才润色,否则原样返回
-                timeLog("润色 [qwen-flash] \(ms(tP))")
+                timeLog("润色 [qwen-plus] \(ms(tP))")
 
                 TextInserter.insert(polished)
                 setStatus("已插入 ✓")
