@@ -61,7 +61,8 @@ final class VolcanoStreamingSession: @unchecked Sendable {
     private var latest = ""
     private var finished = false
     private var cont: CheckedContinuation<String, Error>?
-    private var sentBytes = 0   // 已推流的 PCM 字节数(诊断"没声音/没推流")
+    private var finalError: Error?   // 若会话在 finish() 之前就失败,存下真错误供 finish() 抛出
+    private var sentBytes = 0        // 已推流的 PCM 字节数(诊断"没声音/没推流")
 
     /// 开始一次流式会话:建连 + 发配置 + 起收包循环。
     func start() throws {
@@ -111,7 +112,11 @@ final class VolcanoStreamingSession: @unchecked Sendable {
             q.async {
                 // 录音期间已音频时长(16k * 16bit * 单声道 = 32000 字节/秒)
                 Self.log("松手:已推流 \(self.sentBytes) 字节(≈\(String(format: "%.1f", Double(self.sentBytes) / 32000.0))s)")
-                if self.finished { c.resume(returning: self.latest); return }
+                // 会话若已结束:有错误就抛真错误(否则会把空串当成功 → 误显示"没听清")
+                if self.finished {
+                    if let err = self.finalError { c.resume(throwing: err) } else { c.resume(returning: self.latest) }
+                    return
+                }
                 self.cont = c
                 guard let ws = self.ws else { c.resume(throwing: SError.failed("连接未建立")); return }
                 self.seq += 1
