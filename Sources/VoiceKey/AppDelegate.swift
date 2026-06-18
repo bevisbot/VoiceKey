@@ -181,7 +181,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             do {
                 let tT = Date()
                 let raw = try await s.finish()
-                timeLog("转写 [火山] \(ms(tT))")
+                timeLog("转写 [火山] \(ms(tT)) 原文:\(raw)")
                 guard !raw.isEmpty else {
                     setStatus("没听清,请重试")
                     hud.show(.message("没听清,请重试")); hud.hide(after: 1.5)
