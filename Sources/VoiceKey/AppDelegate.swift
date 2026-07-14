@@ -12,7 +12,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let network = NetworkMonitor()
     private let hud = RecorderHUD()
     private var session: VolcanoStreamingSession?   // 当前流式会话
-    private var busy = false          // 转写/润色中
+    private var busy = false          // 转写中
     private var isRecording = false   // 正在录音
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -21,7 +21,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         requestMicPermission()
         promptAccessibilityIfNeeded()
         network.start()
-        AliyunConfig.ensureTemplate()
         VolcanoConfig.ensureTemplate()
         if ProcessInfo.processInfo.environment["VK_HUD_TEST"] != nil { runHUDSelfTest() }
     }
@@ -35,9 +34,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         func cycle() {
             hud.show(.recording)
             DispatchQueue.main.asyncAfter(deadline: .now() + 3.5) { self.hud.show(.transcribing) }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) { self.hud.show(.polishing) }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 6.5) { self.hud.show(.done("已输入 ✓")) }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 8.0) { cycle() }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) { self.hud.show(.done("已输入 ✓")) }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 6.5) { cycle() }
         }
         cycle()
     }
@@ -72,13 +70,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         statusMenuItem.isEnabled = false
         menu.addItem(statusMenuItem)
 
-        let engine = NSMenuItem(title: "引擎:火山实时流式 + qwen-plus 润色", action: nil, keyEquivalent: "")
+        let engine = NSMenuItem(title: "引擎:火山实时流式(豆包,无润色)", action: nil, keyEquivalent: "")
         engine.isEnabled = false
         menu.addItem(engine)
 
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: VolcanoConfig.isConfigured ? "火山 API 凭据(已填,点此重填)…" : "填写火山 API 凭据…", action: #selector(editVolcanoKey), keyEquivalent: ""))
-        menu.addItem(NSMenuItem(title: AliyunConfig.isConfigured ? "阿里云 Key·润色(已填,点此重填)…" : "填写阿里云 Key(qwen-plus 润色)…", action: #selector(editAliyunKey), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: "打开「辅助功能」设置…", action: #selector(openAccessibility), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: "打开「麦克风」设置…", action: #selector(openMic), keyEquivalent: ""))
 
@@ -124,7 +121,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         AVCaptureDevice.requestAccess(for: .audio) { _ in }
     }
 
-    // MARK: - 录音(边录边推流)→ 松手出结果 → qwen-plus 润色 → 粘贴。无降级。
+    // MARK: - 录音(边录边推流)→ 松手出结果 → 直接粘贴(纯豆包,无润色)。无降级。
     private func startRecording() {
         guard !busy, !isRecording else { return }
         guard VolcanoConfig.isConfigured else {
@@ -188,14 +185,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     return
                 }
 
-                setStatus("润色中…")
-                hud.engineText = "qwen-plus"
-                hud.show(.polishing)
-                let tP = Date()
-                let polished = await CloudPolisher.polish(raw)   // 配了阿里云 key 才润色,否则原样返回
-                timeLog("润色 [qwen-plus] \(ms(tP))")
-
-                TextInserter.insert(polished)
+                TextInserter.insert(raw)   // 纯豆包输出,不做二次润色
                 setStatus("已插入 ✓")
                 hud.show(.done("已输入 ✓")); hud.hide(after: 1.0)
             } catch {
@@ -210,10 +200,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func editVolcanoKey() {
         VolcanoConfig.ensureTemplate()
         NSWorkspace.shared.open(VolcanoConfig.fileURL)
-    }
-    @objc private func editAliyunKey() {
-        AliyunConfig.ensureTemplate()
-        NSWorkspace.shared.open(AliyunConfig.fileURL)
     }
     @objc private func openAccessibility() {
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
