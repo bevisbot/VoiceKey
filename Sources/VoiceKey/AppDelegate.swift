@@ -22,6 +22,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         promptAccessibilityIfNeeded()
         network.start()
         VolcanoConfig.ensureTemplate()
+        AliyunConfig.ensureTemplate()
+        HotWords.ensureTemplate()
         if ProcessInfo.processInfo.environment["VK_HUD_TEST"] != nil { runHUDSelfTest() }
     }
 
@@ -70,12 +72,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         statusMenuItem.isEnabled = false
         menu.addItem(statusMenuItem)
 
-        let engine = NSMenuItem(title: "引擎:火山实时流式(豆包,无润色)", action: nil, keyEquivalent: "")
+        let engine = NSMenuItem(title: "引擎:火山实时流式 + qwen-plus 润色", action: nil, keyEquivalent: "")
         engine.isEnabled = false
         menu.addItem(engine)
 
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: VolcanoConfig.isConfigured ? "火山 API 凭据(已填,点此重填)…" : "填写火山 API 凭据…", action: #selector(editVolcanoKey), keyEquivalent: ""))
+        menu.addItem(NSMenuItem(title: AliyunConfig.isConfigured ? "阿里云 Key·润色(已填,点此重填)…" : "填写阿里云 Key(qwen-plus 润色)…", action: #selector(editAliyunKey), keyEquivalent: ""))
+        menu.addItem(NSMenuItem(title: "编辑高频词表(纠错优先靠拢)…", action: #selector(editHotWords), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: "打开「辅助功能」设置…", action: #selector(openAccessibility), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: "打开「麦克风」设置…", action: #selector(openMic), keyEquivalent: ""))
 
@@ -121,7 +125,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         AVCaptureDevice.requestAccess(for: .audio) { _ in }
     }
 
-    // MARK: - 录音(边录边推流)→ 松手出结果 → 直接粘贴(纯豆包,无润色)。无降级。
+    // MARK: - 录音(边录边推流)→ 松手出结果 → qwen-plus 润色(带高频词表)→ 粘贴。无降级。
     private func startRecording() {
         guard !busy, !isRecording else { return }
         guard VolcanoConfig.isConfigured else {
@@ -185,7 +189,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     return
                 }
 
-                TextInserter.insert(raw)   // 纯豆包输出,不做二次润色
+                setStatus("润色中…")
+                hud.engineText = "qwen-plus"
+                hud.show(.polishing)
+                let tP = Date()
+                let polished = await CloudPolisher.polish(raw)   // 配了阿里云 key 才润色,否则原样返回
+                timeLog("润色 [qwen-plus] \(ms(tP))")
+
+                TextInserter.insert(polished)
                 setStatus("已插入 ✓")
                 hud.show(.done("已输入 ✓")); hud.hide(after: 1.0)
             } catch {
@@ -200,6 +211,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func editVolcanoKey() {
         VolcanoConfig.ensureTemplate()
         NSWorkspace.shared.open(VolcanoConfig.fileURL)
+    }
+    @objc private func editAliyunKey() {
+        AliyunConfig.ensureTemplate()
+        NSWorkspace.shared.open(AliyunConfig.fileURL)
+    }
+    @objc private func editHotWords() {
+        HotWords.ensureTemplate()
+        NSWorkspace.shared.open(HotWords.fileURL)
     }
     @objc private func openAccessibility() {
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {

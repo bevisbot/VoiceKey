@@ -7,6 +7,7 @@ final class RecorderHUD {
     enum State {
         case recording
         case transcribing
+        case polishing
         case done(String)
         case message(String)
     }
@@ -66,6 +67,8 @@ final class RecorderHUD {
             engineLabel.isHidden = true
         case .transcribing:
             switchToProcessing("转写中…", centered)
+        case .polishing:
+            switchToProcessing("润色中…", centered)
         case .done(let t):
             dot.isHidden = false; stopPulse(); dotColor(.systemGreen)
             waveform.isHidden = true; spinner.isHidden = true; spinner.stopAnimation(nil)
